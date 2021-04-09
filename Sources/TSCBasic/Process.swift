@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright (c) 2014 - 2020 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2021 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -217,6 +217,9 @@ public final class Process: ObjectIdentifierProtocol {
     /// The path to the directory under which to run the process.
     public let workingDirectory: AbsolutePath?
 
+    /// The process' input file descriptor.
+    public let inputPipeFd: Int32?
+
     /// The process id of the spawned process, available after the process is launched.
     #if os(Windows)
     private var _process: Foundation.Process?
@@ -278,6 +281,34 @@ public final class Process: ObjectIdentifierProtocol {
     ///   - arguments: The arguments for the subprocess.
     ///   - environment: The environment to pass to subprocess. By default the current process environment
     ///     will be inherited.
+    ///   - inputPipeFd: The input file descriptor for this process' standard input.
+    ///   - outputRedirection: How process redirects its output. Default value is .collect.
+    ///   - verbose: If true, launch() will print the arguments of the subprocess before launching it.
+    ///   - startNewProcessGroup: If true, a new progress group is created for the child making it
+    ///     continue running even if the parent is killed or interrupted. Default value is true.
+    public init(
+        arguments: [String],
+        environment: [String: String] = ProcessEnv.vars,
+        inputPipeFd: Int32,
+        outputRedirection: OutputRedirection = .collect,
+        verbose: Bool = Process.verbose,
+        startNewProcessGroup: Bool = true
+    ) {
+        self.arguments = arguments
+        self.environment = environment
+        self.workingDirectory = nil
+        self.inputPipeFd = inputPipeFd
+        self.outputRedirection = outputRedirection
+        self.verbose = verbose
+        self.startNewProcessGroup = startNewProcessGroup
+    }
+
+    /// Create a new process instance.
+    ///
+    /// - Parameters:
+    ///   - arguments: The arguments for the subprocess.
+    ///   - environment: The environment to pass to subprocess. By default the current process environment
+    ///     will be inherited.
     ///   - workingDirectory: The path to the directory under which to run the process.
     ///   - outputRedirection: How process redirects its output. Default value is .collect.
     ///   - verbose: If true, launch() will print the arguments of the subprocess before launching it.
@@ -288,6 +319,7 @@ public final class Process: ObjectIdentifierProtocol {
         arguments: [String],
         environment: [String: String] = ProcessEnv.vars,
         workingDirectory: AbsolutePath,
+        inputPipeFd: Int32? = nil,
         outputRedirection: OutputRedirection = .collect,
         verbose: Bool = Process.verbose,
         startNewProcessGroup: Bool = true
@@ -295,6 +327,7 @@ public final class Process: ObjectIdentifierProtocol {
         self.arguments = arguments
         self.environment = environment
         self.workingDirectory = workingDirectory
+        self.inputPipeFd = inputPipeFd
         self.outputRedirection = outputRedirection
         self.verbose = verbose
         self.startNewProcessGroup = startNewProcessGroup
@@ -320,6 +353,7 @@ public final class Process: ObjectIdentifierProtocol {
         self.arguments = arguments
         self.environment = environment
         self.workingDirectory = nil
+        self.inputPipeFd = nil
         self.outputRedirection = outputRedirection
         self.verbose = verbose
         self.startNewProcessGroup = startNewProcessGroup
@@ -400,6 +434,10 @@ public final class Process: ObjectIdentifierProtocol {
         _process?.arguments = Array(arguments.dropFirst()) // Avoid including the executable URL twice.
         _process?.executableURL = executablePath.asURL
         _process?.environment = environment
+
+        if self.inputPipeFd != nil {
+          _process?.standardInput = FileHandle(fileDescriptor: self.inputPipeFd!)
+        }
 
         if outputRedirection.redirectsOutput {
             let stdoutPipe = Pipe()
@@ -497,14 +535,20 @@ public final class Process: ObjectIdentifierProtocol {
             #endif
         }
 
-        // Workaround for https://sourceware.org/git/gitweb.cgi?p=glibc.git;h=89e435f3559c53084498e9baad22172b64429362
-        // Change allowing for newer version of glibc
-        guard let devNull = strdup("/dev/null") else {
-            throw SystemError.posix_spawn(0, arguments)
+        if self.inputPipeFd != nil {
+          // Forward the input fd to stdin.
+          print("Re-directing FD[\(inputPipeFd!)] to STDIN_FILENO")
+          posix_spawn_file_actions_adddup2(&fileActions, inputPipeFd!, STDIN_FILENO)
+        } else {
+          // Workaround for https://sourceware.org/git/gitweb.cgi?p=glibc.git;h=89e435f3559c53084498e9baad22172b64429362
+          // Change allowing for newer version of glibc
+          guard let devNull = strdup("/dev/null") else {
+              throw SystemError.posix_spawn(0, arguments)
+          }
+          defer { free(devNull) }
+          // Open /dev/null as stdin.
+          posix_spawn_file_actions_addopen(&fileActions, STDIN_FILENO, devNull, O_RDONLY, 0)
         }
-        defer { free(devNull) }
-        // Open /dev/null as stdin.
-        posix_spawn_file_actions_addopen(&fileActions, 0, devNull, O_RDONLY, 0)
 
         var outputPipe: [Int32] = [-1, -1]
         var stderrPipe: [Int32] = [-1, -1]

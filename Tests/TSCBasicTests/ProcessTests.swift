@@ -14,6 +14,7 @@ import XCTest
 @_implementationOnly import TSCclibc
 import TSCLibc
 import TSCBasic
+import Foundation
 
 typealias ProcessID = TSCBasic.Process.ProcessID
 typealias Process = TSCBasic.Process
@@ -331,4 +332,28 @@ class ProcessTests: XCTestCase {
             }
         }
     }
+
+  func testForwardInput() throws {
+    try withTemporaryFile { file in
+      let stream = BufferedOutputByteStream()
+      stream <<< "Hello"
+      try localFileSystem.writeFileContents(file.path, bytes: stream.bytes)
+
+      file.fileHandle.write("Bell".data(using: .ascii)!)
+
+      let process = Process(arguments: [script("simple-input-output")], inputPipeFd: file.fileHandle.fileDescriptor)
+      try process.launch()
+
+
+      file.fileHandle.closeFile()
+
+      let result = try process.waitUntilExit()
+
+
+      print("Wrote: \(try localFileSystem.readFileContents(file.path).description)")
+      print("Result: \(try result.utf8Output())")
+
+      //XCTAssertEqual(try result.utf8Output(), "Hello")
+    }
+  }
 }
